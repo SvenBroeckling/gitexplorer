@@ -108,6 +108,26 @@ class GitBackend:
         except Exception:
             return []
 
+    def get_changed_files(self, commit_hash: str) -> list[str]:
+        """Return all file paths touched by *commit_hash* (vs its first parent)."""
+        if not self.valid:
+            return []
+        try:
+            commit = self.repo.commit(commit_hash)
+            if not commit.parents:
+                return [item.path for item in commit.tree.traverse()
+                        if item.type == "blob"]
+            diff = commit.parents[0].diff(commit)
+            paths: set[str] = set()
+            for d in diff:
+                if d.a_path:
+                    paths.add(d.a_path)
+                if d.b_path:
+                    paths.add(d.b_path)
+            return list(paths)
+        except Exception:
+            return []
+
     # ------------------------------------------------------------------
     # Content & diff
     # ------------------------------------------------------------------

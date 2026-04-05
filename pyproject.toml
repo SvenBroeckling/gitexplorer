@@ -28,9 +28,9 @@ dependencies = [
 gitexplorer = "gitexplorer.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/yourusername/gitexplorer"
-Repository = "https://github.com/yourusername/gitexplorer"
-Issues = "https://github.com/yourusername/gitexplorer/issues"
+Homepage = "https://github.com/SvenBroeckling/gitexplorer"
+Repository = "https://github.com/SvenBroeckling/gitexplorer"
+Issues = "https://github.com/SvenBroeckling/gitexplorer/issues"
 
 [build-system]
 requires = ["hatchling"]

@@ -43,7 +43,16 @@ class DiffHighlighter(QSyntaxHighlighter):
             tokens = []
 
         for ttype, value in tokens:
-            s = _STYLE.style_for_token(ttype)
+            # Walk up the token hierarchy until style_for_token succeeds;
+            # newer Pygments versions can raise KeyError for unknown subtypes.
+            t = ttype
+            s: dict = {}
+            while t is not None:
+                try:
+                    s = _STYLE.style_for_token(t)
+                    break
+                except KeyError:
+                    t = t.parent
             color: str | None = s.get("color")  # hex without '#', or None
             bold: bool = bool(s.get("bold", False))
 

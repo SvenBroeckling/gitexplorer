@@ -20,6 +20,10 @@ build/
 *.swp
 *.swo
 
+# Misc
+.claude
+CLAUDE.md
+
 # OS
 .DS_Store
 Thumbs.db
