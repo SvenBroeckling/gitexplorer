@@ -1,125 +1,213 @@
-"""Horizontal commit timeline slider widget."""
+"""Commit timeline widget — replaces the old QSlider-based approach.
+
+_Timeline is a fully custom-painted widget: a horizontal line with a dot per
+commit, date labels where space allows, hover highlighting, tooltip, and full
+keyboard / mouse-wheel navigation.  No QSlider involved.
+"""
 from __future__ import annotations
 
-from PyQt6.QtCore import QPoint, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QPolygon, QWheelEvent
-from PyQt6.QtWidgets import (
-    QLabel,
-    QSizePolicy,
-    QSlider,
-    QVBoxLayout,
-    QWidget,
+from PyQt6.QtCore import QPoint, QRect, Qt, pyqtSignal
+from PyQt6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QPainter,
+    QPen,
+    QWheelEvent,
 )
+from PyQt6.QtWidgets import QLabel, QSizePolicy, QToolTip, QVBoxLayout, QWidget
 
 from gitexplorer.git_backend import CommitInfo
 
-
-# ── helpers ──────────────────────────────────────────────────────────────────
-
-def _commit_x(index: int, span: int, usable: int, margin: int = 10) -> int:
-    """Pixel x for commit *index* given the groove geometry."""
-    frac = index / span if span else 0
-    return int(margin + frac * usable)
-
-
-# ── tick slider ───────────────────────────────────────────────────────────────
-
-class _TickSlider(QSlider):
-    """QSlider with custom diamond ticks; wheel moves exactly one step."""
-
-    TICK_H = 8
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        super().paintEvent(event)
-        span = self.maximum() - self.minimum()
-        if span == 0:
-            return
-
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        w, h = self.width(), self.height()
-        usable = w - 20
-
-        painter.setPen(QPen(QColor("#aaaaaa"), 1))
-        painter.setBrush(QColor("#888888"))
-
-        size = 3
-        cy = h - self.TICK_H - 2
-
-        for i in range(self.minimum(), self.maximum() + 1):
-            x = _commit_x(i, span, usable)
-            pts = [QPoint(x, cy), QPoint(x + size, cy + size),
-                   QPoint(x, cy + size * 2), QPoint(x - size, cy + size)]
-            painter.drawPolygon(QPolygon(pts))
-
-        painter.end()
-
-    def wheelEvent(self, event: QWheelEvent) -> None:
-        step = 1 if event.angleDelta().y() > 0 else -1
-        self.setValue(self.value() + step)
-        event.accept()
+# ── geometry constants ────────────────────────────────────────────────────────
+_MARGIN   = 14   # px reserved on each side for the end dots
+_LINE_Y   = 20   # y of the timeline track
+_R_NORMAL = 4    # dot radius — unselected
+_R_HOVER  = 5    # dot radius — hovered
+_R_SEL    = 7    # dot radius — selected
+_LABEL_GAP = 7   # px between track and top of date labels
+_FONT_PX  = 10   # date-label font size in pixels
+_H        = 56   # total widget height
 
 
-# ── date ruler ────────────────────────────────────────────────────────────────
+# ── internal helpers ──────────────────────────────────────────────────────────
 
-class _DateRuler(QWidget):
-    """Paints short date strings aligned under each commit tick mark.
+def _x_for(index: int, n: int, width: int) -> int:
+    """Pixel x for commit *index* (0 = oldest/left, n-1 = newest/right)."""
+    if n <= 1:
+        return width // 2
+    return int(_MARGIN + index / (n - 1) * (width - 2 * _MARGIN))
 
-    x-positions mirror *_TickSlider* exactly so labels sit under diamonds.
-    """
 
-    _FONT_PX = 10
-    _H = 18        # fixed widget height
+def _index_at(x: int, n: int, width: int) -> int:
+    """Nearest commit index for pixel *x*."""
+    if n <= 1:
+        return 0
+    frac = (x - _MARGIN) / max(1, width - 2 * _MARGIN)
+    return max(0, min(n - 1, round(frac * (n - 1))))
+
+
+# ── timeline widget ───────────────────────────────────────────────────────────
+
+class _Timeline(QWidget):
+    """Custom-painted interactive commit timeline."""
+
+    activated = pyqtSignal(int)   # emitted when the selected index changes
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._dates: list[str] = []
-        self.setFixedHeight(self._H)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._commits: list[CommitInfo] = []
+        self._current = 0
+        self._hovered = -1
 
-    def set_dates(self, dates: list[str]) -> None:
-        self._dates = dates
+        self.setFixedHeight(_H)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+
+    # ------------------------------------------------------------------
+    # Public
+    # ------------------------------------------------------------------
+
+    def set_commits(self, commits: list[CommitInfo], current: int) -> None:
+        self._commits = commits
+        self._current = current
+        self._hovered = -1
         self.update()
 
+    def set_current(self, index: int) -> None:
+        self._current = index
+        self.update()
+
+    # ------------------------------------------------------------------
+    # Painting
+    # ------------------------------------------------------------------
+
     def paintEvent(self, event) -> None:  # noqa: N802
-        if not self._dates:
+        n = len(self._commits)
+        if n == 0:
             return
 
-        span = len(self._dates) - 1
-        usable = self.width() - 20
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w = self.width()
 
-        painter = QPainter(self)
-        font = QFont()
-        font.setPixelSize(self._FONT_PX)
-        painter.setFont(font)
-        painter.setPen(QColor("#777777"))
-        metrics = painter.fontMetrics()
+        # ── track line ──────────────────────────────────────────────
+        p.setPen(QPen(QColor("#4a4a4a"), 1))
+        p.drawLine(_MARGIN, _LINE_Y, w - _MARGIN, _LINE_Y)
+
+        # ── date labels ─────────────────────────────────────────────
+        lbl_font = QFont()
+        lbl_font.setPixelSize(_FONT_PX)
+        p.setFont(lbl_font)
+        fm = QFontMetrics(lbl_font)
+        lbl_top = _LINE_Y + _LABEL_GAP
 
         prev_right = -9999
-        baseline = self._H - 2
+        for i, c in enumerate(self._commits):
+            x = _x_for(i, n, w)
+            label = c.date[:10]
+            tw = fm.horizontalAdvance(label)
+            lx = max(0, min(x - tw // 2, w - tw))
 
-        for i, label in enumerate(self._dates):
-            x = _commit_x(i, span, usable)
-            text_w = metrics.horizontalAdvance(label)
-            lx = x - text_w // 2
-
-            # clamp to widget bounds
-            lx = max(0, min(lx, self.width() - text_w))
-
-            if lx < prev_right + 4:   # skip if overlapping
+            if lx < prev_right + 3:
                 continue
 
-            painter.drawText(lx, baseline, label)
-            prev_right = lx + text_w
+            color = QColor("#e0e0e0") if i == self._current else QColor("#666666")
+            p.setPen(color)
+            p.drawText(lx, lbl_top + fm.ascent(), label)
+            prev_right = lx + tw
 
-        painter.end()
+        # ── dots (drawn after labels so they sit on top) ─────────────
+        for i in range(n):
+            x = _x_for(i, n, w)
+            is_sel = (i == self._current)
+            is_hov = (i == self._hovered and not is_sel)
+
+            if is_sel:
+                r = _R_SEL
+                p.setBrush(QColor("#f0f0f0"))
+                p.setPen(QPen(QColor("#888888"), 1))
+            elif is_hov:
+                r = _R_HOVER
+                p.setBrush(QColor("#999999"))
+                p.setPen(QPen(QColor("#777777"), 1))
+            else:
+                r = _R_NORMAL
+                p.setBrush(QColor("#555555"))
+                p.setPen(QPen(QColor("#444444"), 1))
+
+            p.drawEllipse(QPoint(x, _LINE_Y), r, r)
+
+        p.end()
+
+    # ------------------------------------------------------------------
+    # Mouse
+    # ------------------------------------------------------------------
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self._commits:
+            idx = _index_at(event.pos().x(), len(self._commits), self.width())
+            if idx != self._current:
+                self._current = idx
+                self.update()
+                self.activated.emit(idx)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if not self._commits:
+            return
+        idx = _index_at(event.pos().x(), len(self._commits), self.width())
+        if idx != self._hovered:
+            self._hovered = idx
+            self.update()
+        c = self._commits[idx]
+        QToolTip.showText(
+            event.globalPosition().toPoint(),
+            f"[{c.short_hash}]  {c.date}\n{c.author}\n{c.message}",
+            self,
+        )
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._hovered = -1
+        self.update()
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        if not self._commits:
+            return
+        step = 1 if event.angleDelta().y() > 0 else -1
+        new = max(0, min(len(self._commits) - 1, self._current + step))
+        if new != self._current:
+            self._current = new
+            self.update()
+            self.activated.emit(new)
+        event.accept()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        n = len(self._commits)
+        if not n:
+            return
+        key = event.key()
+        if key == Qt.Key.Key_Left:
+            new = max(0, self._current - 1)
+        elif key == Qt.Key.Key_Right:
+            new = min(n - 1, self._current + 1)
+        elif key == Qt.Key.Key_Home:
+            new = 0
+        elif key == Qt.Key.Key_End:
+            new = n - 1
+        else:
+            super().keyPressEvent(event)
+            return
+        if new != self._current:
+            self._current = new
+            self.update()
+            self.activated.emit(new)
 
 
-# ── public widget ─────────────────────────────────────────────────────────────
+# ── public composite widget ───────────────────────────────────────────────────
 
 class CommitSlider(QWidget):
-    """Commit timeline: slider + date ruler + detail label."""
+    """Timeline + detail label.  Drop-in replacement for the old slider widget."""
 
     commit_changed = pyqtSignal(int)
 
@@ -131,47 +219,38 @@ class CommitSlider(QWidget):
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setSpacing(2)
 
-        self._slider = _TickSlider(Qt.Orientation.Horizontal)
-        self._slider.setTickPosition(QSlider.TickPosition.NoTicks)
-        self._slider.setMinimum(0)
-        self._slider.setMaximum(0)
-        self._slider.setMinimumHeight(36)
-        self._slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._slider.valueChanged.connect(self._on_value_changed)
-        layout.addWidget(self._slider)
-
-        self._ruler = _DateRuler()
-        layout.addWidget(self._ruler)
+        self._timeline = _Timeline()
+        self._timeline.activated.connect(self._on_activated)
+        layout.addWidget(self._timeline)
 
         self._info = QLabel()
         self._info.setStyleSheet("color: #cccccc; font-size: 14px;")
         self._info.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(self._info)
 
+    # ------------------------------------------------------------------
+    # Public API (same as before)
+    # ------------------------------------------------------------------
+
     def set_commits(self, commits: list[CommitInfo]) -> None:
         self._commits = commits
-
-        self._slider.blockSignals(True)
-        self._slider.setMinimum(0)
-        self._slider.setMaximum(max(len(commits) - 1, 0))
         last = max(len(commits) - 1, 0)
-        self._slider.setValue(last)
-        self._slider.blockSignals(False)
-
-        # Date ruler: show only the date part ("YYYY-MM-DD") to keep labels compact
-        self._ruler.set_dates([c.date[:10] for c in commits])
-
+        self._timeline.set_commits(commits, last)
         self._update_label(last)
         self.commit_changed.emit(last)
 
     def current_index(self) -> int:
-        return self._slider.value()
+        return self._timeline._current
 
-    def _on_value_changed(self, value: int) -> None:
-        self._update_label(value)
-        self.commit_changed.emit(value)
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    def _on_activated(self, index: int) -> None:
+        self._update_label(index)
+        self.commit_changed.emit(index)
 
     def _update_label(self, index: int) -> None:
         if index < len(self._commits):

@@ -2,6 +2,8 @@
 
 A PyQt6-based Git history explorer. Browse any git repository's file history with syntax-highlighted inline and side-by-side diffs.
 
+![GitExplorer screenshot](screenshot.png)
+
 ## Usage
 
 Run from inside a git repository:
