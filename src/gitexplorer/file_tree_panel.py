@@ -4,7 +4,9 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor
 from PyQt6.QtWidgets import (
+    QAbstractScrollArea,
     QComboBox,
+    QSizePolicy,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -52,6 +54,12 @@ class FileTreePanel(QWidget):
         self._file_items: dict[str, QTreeWidgetItem] = {}
         self._dir_items:  dict[str, QTreeWidgetItem] = {}
 
+        self.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Expanding,
+        )
+        self.setMinimumWidth(180)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
@@ -64,6 +72,12 @@ class FileTreePanel(QWidget):
         self._tree.setHeaderHidden(True)
         self._tree.setAnimated(True)
         self._tree.setUniformRowHeights(True)
+        self._tree.setSizeAdjustPolicy(
+            QAbstractScrollArea.SizeAdjustPolicy.AdjustIgnored
+        )
+        self._tree.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
         self._tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         font = self._tree.font()
         font.setPointSize(font.pointSize() + 3)

@@ -217,6 +217,7 @@ class MainWindow(QMainWindow):
 
     def _setup_ui(self) -> None:
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
 
         self._file_tree = FileTreePanel(self._backend)
         self._file_tree.file_opened.connect(self._open_file)
@@ -234,6 +235,8 @@ class MainWindow(QMainWindow):
         )
         splitter.addWidget(self._tabs)
 
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
         splitter.setSizes([260, 1020])
         self.setCentralWidget(splitter)
         self.setStatusBar(QStatusBar())
