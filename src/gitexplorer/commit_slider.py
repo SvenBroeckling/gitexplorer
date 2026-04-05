@@ -244,6 +244,17 @@ class CommitSlider(QWidget):
     def current_index(self) -> int:
         return self._timeline._current
 
+    def step(self, delta: int) -> None:
+        """Move *delta* commits (negative = older, positive = newer)."""
+        n = len(self._commits)
+        if not n:
+            return
+        new = max(0, min(n - 1, self._timeline._current + delta))
+        if new != self._timeline._current:
+            self._timeline.set_current(new)
+            self._update_label(new)
+            self.commit_changed.emit(new)
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
