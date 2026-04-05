@@ -41,6 +41,8 @@ class FileTreePanel(QWidget):
     """Emits *file_opened(filepath)* when the user double-clicks a file."""
 
     file_opened = pyqtSignal(str)
+    _FILTER_ALL = "All files"
+    _FILTER_COMMIT = "Only in Commit"
 
     def __init__(self, backend: GitBackend, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -53,6 +55,8 @@ class FileTreePanel(QWidget):
         # the first _build_tree (which reassigns them).
         self._file_items: dict[str, QTreeWidgetItem] = {}
         self._dir_items:  dict[str, QTreeWidgetItem] = {}
+        self._branch_files: list[str] = []
+        self._commit_files: list[str] = []
 
         self.setSizePolicy(
             QSizePolicy.Policy.Preferred,
@@ -67,6 +71,11 @@ class FileTreePanel(QWidget):
         self._branch_combo = QComboBox()
         self._branch_combo.currentTextChanged.connect(self._on_branch_changed)
         layout.addWidget(self._branch_combo)
+
+        self._filter_combo = QComboBox()
+        self._filter_combo.addItems([self._FILTER_ALL, self._FILTER_COMMIT])
+        self._filter_combo.currentTextChanged.connect(self._on_filter_changed)
+        layout.addWidget(self._filter_combo)
 
         self._tree = QTreeWidget()
         self._tree.setHeaderHidden(True)
@@ -97,13 +106,21 @@ class FileTreePanel(QWidget):
         if branch:
             self._build_tree(branch)
 
+    def _on_filter_changed(self, _label: str) -> None:
+        self._rebuild_tree(preserve_expanded=True)
+
     def _build_tree(self, branch: str) -> None:
+        self._branch_files = self._backend.get_file_tree(branch)
+        self._rebuild_tree(preserve_expanded=False)
+
+    def _rebuild_tree(self, preserve_expanded: bool) -> None:
+        expanded_dirs = self.get_expanded_dirs() if preserve_expanded else []
         self._tree.clear()
         self._file_items: dict[str, QTreeWidgetItem] = {}   # filepath → item
         self._dir_items: dict[str, QTreeWidgetItem] = {}    # dirpath  → item
 
-        files = self._backend.get_file_tree(branch)
         all_path_items: dict[str, QTreeWidgetItem] = {}
+        files = self._visible_files()
 
         for filepath in files:
             parts = filepath.split("/")
@@ -131,7 +148,21 @@ class FileTreePanel(QWidget):
                 parent = item
 
         _sort_dirs_first(self._tree)
-        self._tree.collapseAll()
+        if preserve_expanded:
+            self.restore_expanded_dirs(expanded_dirs)
+        else:
+            self._tree.collapseAll()
+
+    def _visible_files(self) -> list[str]:
+        if self._filter_combo.currentText() == self._FILTER_COMMIT:
+            branch_files = set(self._branch_files)
+            return sorted(fp for fp in self._commit_files if fp in branch_files)
+        return self._branch_files
+
+    def set_commit_files(self, filepaths: list[str]) -> None:
+        self._commit_files = sorted(set(filepaths))
+        if self._filter_combo.currentText() == self._FILTER_COMMIT:
+            self._rebuild_tree(preserve_expanded=True)
 
     def highlight_files(self, filepaths: list[str]) -> None:
         """Highlight *filepaths* and their ancestor dirs; clear everything else."""
