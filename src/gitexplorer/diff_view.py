@@ -5,7 +5,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 
-from PyQt6.QtCore import QPoint, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -137,6 +137,10 @@ class _CodeEditor(QTextEdit):
         self._block_anchor_col = 0
         self._syncing_visual_cursor = False
         self._pending_g = False
+        self._pending_g_timer = QTimer(self)
+        self._pending_g_timer.setSingleShot(True)
+        self._pending_g_timer.setInterval(800)
+        self._pending_g_timer.timeout.connect(self._clear_pending_g)
         self.cursorPositionChanged.connect(self._on_cursor_position_changed)
 
     def paintEvent(self, event: QPaintEvent) -> None:
@@ -156,8 +160,12 @@ class _CodeEditor(QTextEdit):
         mods = event.modifiers()
 
         if self._pending_g:
-            self._pending_g = False
+            self._clear_pending_g()
             if mods == Qt.KeyboardModifier.NoModifier:
+                if key == Qt.Key.Key_G:
+                    self._move_to_boundary(last=False)
+                    event.accept()
+                    return
                 if key == Qt.Key.Key_T:
                     self.next_tab_requested.emit()
                     event.accept()
@@ -176,6 +184,7 @@ class _CodeEditor(QTextEdit):
         if mods == Qt.KeyboardModifier.NoModifier:
             if key == Qt.Key.Key_G:
                 self._pending_g = True
+                self._pending_g_timer.start()
                 event.accept()
                 return
             if key == Qt.Key.Key_V:
@@ -219,6 +228,11 @@ class _CodeEditor(QTextEdit):
                 self.find_requested.emit()
                 event.accept()
                 return
+
+        if mods == Qt.KeyboardModifier.ShiftModifier and key == Qt.Key.Key_G:
+            self._move_to_boundary(last=True)
+            event.accept()
+            return
 
         if mods == Qt.KeyboardModifier.ShiftModifier and key == Qt.Key.Key_V:
             self._start_visual(_VISUAL_LINE)
@@ -290,6 +304,10 @@ class _CodeEditor(QTextEdit):
         cursor.select(QTextCursor.SelectionType.WordUnderCursor)
         return cursor.selectedText().strip()
 
+    def _clear_pending_g(self) -> None:
+        self._pending_g = False
+        self._pending_g_timer.stop()
+
     def _move_cursor(self, operation: QTextCursor.MoveOperation) -> None:
         mode = (
             QTextCursor.MoveMode.KeepAnchor
@@ -297,6 +315,26 @@ class _CodeEditor(QTextEdit):
             else QTextCursor.MoveMode.MoveAnchor
         )
         self.moveCursor(operation, mode)
+        if self._visual_mode == _VISUAL_LINE:
+            self._update_line_visual_selection()
+        elif self._visual_mode == _VISUAL_BLOCK:
+            self._apply_overlays()
+        self.ensure_cursor_band()
+        self.viewport().update()
+
+    def _move_to_boundary(self, *, last: bool) -> None:
+        block = self.document().lastBlock() if last else self.document().firstBlock()
+        if not block.isValid():
+            return
+
+        cursor = self.textCursor()
+        mode = (
+            QTextCursor.MoveMode.KeepAnchor
+            if self._visual_mode in (_VISUAL_CHAR, _VISUAL_LINE)
+            else QTextCursor.MoveMode.MoveAnchor
+        )
+        cursor.setPosition(block.position(), mode)
+        self.setTextCursor(cursor)
         if self._visual_mode == _VISUAL_LINE:
             self._update_line_visual_selection()
         elif self._visual_mode == _VISUAL_BLOCK:
