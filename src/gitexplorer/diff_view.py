@@ -6,8 +6,10 @@ from PyQt6.QtGui import (
     QColor,
     QFont,
     QKeyEvent,
+    QKeySequence,
     QPainter,
     QPaintEvent,
+    QShortcut,
     QTextCharFormat,
     QTextCursor,
     QTextDocument,
@@ -98,6 +100,8 @@ class _CodeEditor(QTextEdit):
 
     zoom_requested = pyqtSignal(int)  # +1 or -1
     find_requested = pyqtSignal()
+    commit_step_requested = pyqtSignal(int)  # +1 or -1
+    change_nav_requested = pyqtSignal(int)  # -1 previous, +1 next
     overlays_changed = pyqtSignal()
 
     _VISUAL_BLOCK_BG = QColor(210, 140, 0, 110)
@@ -107,6 +111,10 @@ class _CodeEditor(QTextEdit):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             delta = 1 if event.angleDelta().y() > 0 else -1
             self.zoom_requested.emit(delta)
+            event.accept()
+        elif event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            delta = 1 if event.angleDelta().y() > 0 else -1
+            self.commit_step_requested.emit(delta)
             event.accept()
         else:
             super().wheelEvent(event)
@@ -165,6 +173,14 @@ class _CodeEditor(QTextEdit):
                 return
             if key == Qt.Key.Key_L:
                 self._move_cursor(QTextCursor.MoveOperation.Right)
+                event.accept()
+                return
+            if key == Qt.Key.Key_N:
+                self.change_nav_requested.emit(+1)
+                event.accept()
+                return
+            if key == Qt.Key.Key_P:
+                self.change_nav_requested.emit(-1)
                 event.accept()
                 return
             if key == Qt.Key.Key_Slash:
@@ -513,6 +529,8 @@ class FileTab(QWidget):
         for editor in (self._clean_edit, self._inline_edit,
                        self._sbs._left, self._sbs._right):
             editor.zoom_requested.connect(self.zoom_requested)
+            editor.commit_step_requested.connect(self._slider.step)
+            editor.change_nav_requested.connect(self._on_change_nav_requested)
             editor.find_requested.connect(self.open_find)
 
         self._stack.insertWidget(_CLEAN, self._clean_edit)
@@ -529,6 +547,18 @@ class FileTab(QWidget):
         root.addWidget(self._find_bar)
 
         self._set_mode(_DEFAULT_MODE)
+        self._setup_shortcuts()
+
+    def _setup_shortcuts(self) -> None:
+        for keyseq, handler in (
+            ("Ctrl+H", self._on_prev_commit),
+            ("Ctrl+L", self._on_next_commit),
+            ("Ctrl+K", self._on_prev_change),
+            ("Ctrl+J", self._on_next_change),
+        ):
+            shortcut = QShortcut(QKeySequence(keyseq), self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(handler)
 
     # ------------------------------------------------------------------
     # Public API
@@ -558,6 +588,18 @@ class FileTab(QWidget):
         if not editor:
             return (0, 0)
         return editor.cursor_line_col()
+
+    def _on_prev_commit(self) -> None:
+        self._slider.step(-1)
+
+    def _on_next_commit(self) -> None:
+        self._slider.step(+1)
+
+    def _on_change_nav_requested(self, delta: int) -> None:
+        if delta < 0:
+            self._on_prev_change()
+        elif delta > 0:
+            self._on_next_change()
 
     def focus_editor(self) -> None:
         editor = self._active_editor()

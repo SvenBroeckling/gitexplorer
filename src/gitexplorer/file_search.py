@@ -110,7 +110,7 @@ class FileSearchDialog(QDialog):
         # Position near top-centre of the parent window
         if parent:
             pg = parent.geometry()
-            dw, dh = 620, 420
+            dw, dh = 920, 560
             self.setGeometry(
                 pg.x() + (pg.width() - dw) // 2,
                 pg.y() + 80,

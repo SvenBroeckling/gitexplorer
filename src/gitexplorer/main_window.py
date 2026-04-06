@@ -7,6 +7,8 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
+    QDialog,
+    QDialogButtonBox,
     QInputDialog,
     QLabel,
     QMainWindow,
@@ -14,6 +16,7 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QStatusBar,
     QTabWidget,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -28,6 +31,133 @@ from gitexplorer.workspace import load_workspace, save_workspace
 _DEFAULT_FONT_SIZE = 13
 _MIN_FONT_SIZE = 6
 _MAX_FONT_SIZE = 32
+_SHORTCUT_SECTIONS = [
+    (
+        "Global",
+        [
+            ("Ctrl+O", "Open file search"),
+            ("Ctrl+Shift+F", "Open find in the current file"),
+            ("?", "Open the shortcuts dialog"),
+            ("Ctrl+Q", "Quit GitExplorer"),
+        ],
+    ),
+    (
+        "File View",
+        [
+            ("Ctrl+H", "Previous commit"),
+            ("Ctrl+L", "Next commit"),
+            ("Shift+Wheel", "Previous/next commit"),
+            ("Ctrl+K", "Previous changed hunk"),
+            ("Ctrl+J", "Next changed hunk"),
+            ("P", "Previous changed hunk"),
+            ("N", "Next changed hunk"),
+            ("/", "Open find bar"),
+            ("Ctrl+=", "Increase font size"),
+            ("Ctrl+-", "Decrease font size"),
+            ("Ctrl+0", "Reset font size"),
+        ],
+    ),
+    (
+        "Editor",
+        [
+            ("H / J / K / L", "Move cursor left / down / up / right"),
+            ("V", "Start visual selection"),
+            ("Shift+V", "Start line visual selection"),
+            ("Ctrl+V", "Start block visual selection"),
+            ("Y", "Copy visual selection"),
+            ("Esc", "Clear visual selection"),
+            ("Ctrl+F", "Page down"),
+            ("Ctrl+B", "Page up"),
+            ("Ctrl+Wheel", "Zoom in or out"),
+        ],
+    ),
+    (
+        "Find Bar",
+        [
+            ("Enter", "Next match"),
+            ("Shift+Enter", "Previous match"),
+            ("Esc", "Close find bar"),
+        ],
+    ),
+    (
+        "Open File Dialog",
+        [
+            ("Up / Down", "Move through matches"),
+            ("Enter", "Open selected file"),
+            ("Esc", "Close dialog"),
+        ],
+    ),
+    (
+        "Commit Timeline",
+        [
+            ("Left / Right", "Previous / next commit"),
+            ("Home / End", "Oldest / newest commit"),
+            ("Wheel", "Previous / next commit"),
+        ],
+    ),
+]
+
+
+class ShortcutsDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Keyboard Shortcuts")
+        self.resize(760, 620)
+        self.setModal(True)
+        self.setStyleSheet("""
+            QDialog { background: #1f1f1f; }
+            QTextBrowser {
+                background: #252525;
+                color: #d8d8d8;
+                border: 1px solid #444;
+                border-radius: 4px;
+                padding: 8px;
+            }
+            QDialogButtonBox QPushButton {
+                background: #383838;
+                color: #d8d8d8;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 6px 16px;
+            }
+            QDialogButtonBox QPushButton:hover { background: #474747; }
+        """)
+
+        layout = QVBoxLayout(self)
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(False)
+        browser.setHtml(self._build_html())
+        layout.addWidget(browser)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+    def _build_html(self) -> str:
+        sections: list[str] = []
+        for title, items in _SHORTCUT_SECTIONS:
+            rows = "".join(
+                f"<tr><td><code>{keys}</code></td><td>{description}</td></tr>"
+                for keys, description in items
+            )
+            sections.append(
+                "<h3 style='color:#f0f0f0; margin:14px 0 6px 0;'>"
+                f"{title}</h3>"
+                "<table style='width:100%; border-collapse:collapse;'>"
+                f"{rows}"
+                "</table>"
+            )
+        return (
+            "<html><body style='font-family:sans-serif; font-size:13px;'>"
+            "<h2 style='color:#f0f0f0; margin-top:0;'>GitExplorer Shortcuts</h2>"
+            "<style>"
+            "td { padding: 6px 8px; border-bottom: 1px solid #333; vertical-align: top; }"
+            "code { color: #f8f8f2; background: #2f2f2f; padding: 1px 4px; }"
+            "</style>"
+            f"{''.join(sections)}"
+            "</body></html>"
+        )
 
 
 class MainWindow(QMainWindow):
@@ -127,6 +257,12 @@ class MainWindow(QMainWindow):
         # Help ──────────────────────────────────────────────────────────
         help_menu = mb.addMenu("&Help")
 
+        shortcuts_action = QAction("&Shortcuts", self)
+        shortcuts_action.setShortcut(QKeySequence("?"))
+        shortcuts_action.setStatusTip("Show all available keyboard shortcuts")
+        shortcuts_action.triggered.connect(self._show_shortcuts)
+        help_menu.addAction(shortcuts_action)
+
         about_action = QAction("&About", self)
         about_action.setStatusTip("About GitExplorer")
         about_action.triggered.connect(self._show_about)
@@ -196,6 +332,9 @@ class MainWindow(QMainWindow):
             "and side-by-side diffs.</p>"
             "<p>Built with PyQt6, GitPython, and Pygments.</p>",
         )
+
+    def _show_shortcuts(self) -> None:
+        ShortcutsDialog(self).exec()
 
     # ------------------------------------------------------------------
     # Setup
