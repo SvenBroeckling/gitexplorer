@@ -19,6 +19,16 @@ class CommitInfo:
 
 
 @dataclass
+class CommitDetails:
+    hash: str
+    short_hash: str
+    author: str
+    date: str
+    message: str
+    changed_files_count: int
+
+
+@dataclass
 class DiffLine:
     content: str
     line_type: str          # 'added' | 'removed' | 'context'
@@ -127,6 +137,24 @@ class GitBackend:
             return list(paths)
         except Exception:
             return []
+
+    def get_commit_details(self, commit_hash: str) -> CommitDetails | None:
+        if not self.valid:
+            return None
+        try:
+            commit = self.repo.commit(commit_hash)
+            message = commit.message.strip()
+            changed_files = self.get_changed_files(commit_hash)
+            return CommitDetails(
+                hash=commit.hexsha,
+                short_hash=commit.hexsha[:7],
+                author=str(commit.author),
+                date=commit.committed_datetime.strftime("%Y-%m-%d %H:%M"),
+                message=message,
+                changed_files_count=len(changed_files),
+            )
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # Content & diff

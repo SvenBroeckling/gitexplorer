@@ -451,10 +451,14 @@ class MainWindow(QMainWindow):
         if self._tabs.currentWidget() is sender:
             files = self._backend.get_changed_files(commit_hash)
             self._update_tree_for_changed_files(files)
+            self._update_commit_info(commit_hash)
 
     def _update_tree_for_changed_files(self, files: list[str]) -> None:
         self._file_tree.set_commit_files(files)
         self._file_tree.highlight_files(files)
+
+    def _update_commit_info(self, commit_hash: str) -> None:
+        self._file_tree.set_commit_info(self._backend.get_commit_details(commit_hash))
 
     # ------------------------------------------------------------------
     # File search
@@ -547,9 +551,11 @@ class MainWindow(QMainWindow):
         if isinstance(tab, FileTab) and tab._current_commit_hash:
             files = self._backend.get_changed_files(tab._current_commit_hash)
             self._update_tree_for_changed_files(files)
+            self._update_commit_info(tab._current_commit_hash)
             tab.focus_editor()
         else:
             self._update_tree_for_changed_files([])
+            self._file_tree.set_commit_info(None)
 
     def _decode_cursor_positions(self, rows: list[str]) -> dict[str, tuple[int, int]]:
         positions: dict[str, tuple[int, int]] = {}

@@ -2,15 +2,21 @@
 from __future__ import annotations
 
 from PyQt6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
+from PyQt6.QtWidgets import QApplication
 from pygments import lex
 from pygments.lexers import TextLexer, get_lexer_for_filename
 from pygments.styles import get_style_by_name
 
-# Dark-theme diff background colors
-DIFF_BG: dict[str, QColor] = {
-    "added":   QColor("#1c3320"),
-    "removed": QColor("#3b1c1c"),
+_DIFF_BG_DARK: dict[str, QColor] = {
+    "added":   QColor("#24522d"),
+    "removed": QColor("#5a2525"),
     "context": QColor("#272822"),
+}
+
+_DIFF_BG_LIGHT: dict[str, QColor] = {
+    "added":   QColor("#cfe8d2"),
+    "removed": QColor("#f0c9c9"),
+    "context": QColor("#f7f7f7"),
 }
 
 _STYLE = get_style_by_name("monokai")
@@ -70,10 +76,16 @@ class DiffHighlighter(QSyntaxHighlighter):
 
         self.rehighlight()
 
+    def _diff_bg(self, diff_type: str) -> QColor:
+        app = QApplication.instance()
+        base = app.palette().base().color() if app is not None else QColor("#272822")
+        colors = _DIFF_BG_DARK if base.lightness() < 128 else _DIFF_BG_LIGHT
+        return colors.get(diff_type, colors["context"])
+
     def highlightBlock(self, text: str) -> None:  # called by Qt
         block_num = self.currentBlock().blockNumber()
         diff_type = self._line_types.get(block_num, "context")
-        bg = DIFF_BG.get(diff_type, DIFF_BG["context"])
+        bg = self._diff_bg(diff_type)
 
         # Background for the whole line
         base = QTextCharFormat()

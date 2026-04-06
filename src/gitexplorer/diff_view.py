@@ -45,7 +45,7 @@ _INLINE = 1
 _SIDEBYSIDE = 2
 
 _MODES = ["Clean", "Inline Diff", "Side-by-Side"]
-_DEFAULT_MODE = "Inline Diff"
+_DEFAULT_MODE = "Side-by-Side"
 _VISUAL_NONE = "none"
 _VISUAL_CHAR = "char"
 _VISUAL_LINE = "line"
@@ -712,8 +712,8 @@ class FileTab(QWidget):
         editor = self._active_editor()
         if not editor:
             return
-        current = _top_visible_line(editor)
-        # last hunk that starts strictly before the current top line
+        current = editor.cursor_line_col()[0]
+        # last hunk that starts strictly before the current cursor line
         target = next((h for h in reversed(hunks) if h < current), hunks[-1])
         _scroll_to_line(editor, target)
         if self._mode == "Side-by-Side":
@@ -726,8 +726,8 @@ class FileTab(QWidget):
         editor = self._active_editor()
         if not editor:
             return
-        current = _top_visible_line(editor)
-        # first hunk that starts strictly after the current top line
+        current = editor.cursor_line_col()[0]
+        # first hunk that starts strictly after the current cursor line
         target = next((h for h in hunks if h > current), hunks[0])
         _scroll_to_line(editor, target)
         if self._mode == "Side-by-Side":

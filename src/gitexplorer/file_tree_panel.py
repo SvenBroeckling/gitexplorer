@@ -6,14 +6,16 @@ from PyQt6.QtGui import QBrush, QColor
 from PyQt6.QtWidgets import (
     QAbstractScrollArea,
     QComboBox,
+    QLabel,
     QSizePolicy,
+    QTextBrowser,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from gitexplorer.git_backend import GitBackend
+from gitexplorer.git_backend import CommitDetails, GitBackend
 
 
 def _sort_dirs_first(parent: QTreeWidget | QTreeWidgetItem) -> None:
@@ -95,6 +97,28 @@ class FileTreePanel(QWidget):
         font.setPointSize(font.pointSize() + 3)
         self._tree.setFont(font)
         layout.addWidget(self._tree, stretch=1)
+
+        info_label = QLabel("Commit")
+        info_label.setStyleSheet("color: #aaaaaa; padding: 4px 2px 0 2px;")
+        layout.addWidget(info_label)
+
+        self._commit_info = QTextBrowser()
+        self._commit_info.setOpenExternalLinks(False)
+        self._commit_info.setReadOnly(True)
+        self._commit_info.setMinimumHeight(140)
+        self._commit_info.setMaximumHeight(220)
+        self._commit_info.setStyleSheet("""
+            QTextBrowser {
+                background: #202020;
+                color: #d8d8d8;
+                border: 1px solid #3f3f3f;
+                border-radius: 4px;
+                padding: 6px;
+            }
+        """)
+        self._commit_info.document().setDocumentMargin(6)
+        layout.addWidget(self._commit_info)
+        self.set_commit_info(None)
 
     def _populate_branches(self) -> None:
         branches = self._backend.get_branches()
@@ -251,3 +275,29 @@ class FileTreePanel(QWidget):
         expanded = set(dirs)
         for path, item in self._dir_items.items():
             item.setExpanded(path in expanded)
+
+    def set_commit_info(self, details: CommitDetails | None) -> None:
+        if details is None:
+            self._commit_info.setHtml(
+                "<div style='color:#8a8a8a;'>No commit selected</div>"
+            )
+            return
+
+        message = details.message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        lines = message.splitlines() or [""]
+        subject = lines[0]
+        body = "<br>".join(lines[1:]) if len(lines) > 1 else ""
+        body_html = (
+            f"<div style='margin-top:8px; color:#bcbcbc;'>{body}</div>"
+            if body else ""
+        )
+        self._commit_info.setHtml(
+            "<html><body style='font-family:sans-serif; font-size:12px;'>"
+            f"<div style='color:#f0f0f0; font-weight:600;'>{subject}</div>"
+            f"<div style='margin-top:8px;'><b>Commit:</b> <code>{details.short_hash}</code></div>"
+            f"<div><b>Author:</b> {details.author}</div>"
+            f"<div><b>Date:</b> {details.date}</div>"
+            f"<div><b>Changed files:</b> {details.changed_files_count}</div>"
+            f"{body_html}"
+            "</body></html>"
+        )
