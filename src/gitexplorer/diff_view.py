@@ -17,6 +17,7 @@ from PyQt6.QtGui import (
     QTextCharFormat,
     QTextCursor,
     QTextDocument,
+    QTextFormat,
     QTextOption,
     QWheelEvent,
 )
@@ -115,6 +116,7 @@ class _CodeEditor(QTextEdit):
 
     _VISUAL_BLOCK_BG = QColor(210, 140, 0, 110)
     _BLOCK_CURSOR_BG = QColor(248, 248, 242, 130)
+    _CURRENT_LINE_BG = QColor(255, 255, 255, 18)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -137,6 +139,7 @@ class _CodeEditor(QTextEdit):
         self._block_anchor_col = 0
         self._syncing_visual_cursor = False
         self._pending_g = False
+        self._highlight_line_override: int | None = None
         self._pending_g_timer = QTimer(self)
         self._pending_g_timer.setSingleShot(True)
         self._pending_g_timer.setInterval(800)
@@ -270,6 +273,10 @@ class _CodeEditor(QTextEdit):
 
     def clear_search_selections(self) -> None:
         self._search_selections = []
+        self._apply_overlays()
+
+    def set_highlight_line(self, line_no: int | None) -> None:
+        self._highlight_line_override = line_no
         self._apply_overlays()
 
     def cursor_line_col(self) -> tuple[int, int]:
@@ -427,17 +434,36 @@ class _CodeEditor(QTextEdit):
             selections.append(sel)
         return selections
 
+    def _current_line_selection(self) -> list[QTextEdit.ExtraSelection]:
+        line_no = self._highlight_line_override
+        if line_no is None:
+            block = self.textCursor().block()
+        else:
+            block = self.document().findBlockByNumber(max(0, line_no))
+        if not block.isValid():
+            return []
+
+        cursor = QTextCursor(block)
+        selection = QTextEdit.ExtraSelection()
+        selection.cursor = cursor
+        selection.format.setBackground(self._CURRENT_LINE_BG)
+        selection.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
+        return [selection]
+
     def _apply_overlays(self) -> None:
-        super().setExtraSelections(self._search_selections + self._block_selections())
+        super().setExtraSelections(
+            self._current_line_selection() + self._search_selections + self._block_selections()
+        )
         self.overlays_changed.emit()
 
     def _on_cursor_position_changed(self) -> None:
         if self._syncing_visual_cursor:
+            self._apply_overlays()
             self.viewport().update()
             return
         if self._visual_mode == _VISUAL_LINE:
             self._update_line_visual_selection()
-        elif self._visual_mode == _VISUAL_BLOCK:
+        else:
             self._apply_overlays()
         self.viewport().update()
 
@@ -497,6 +523,9 @@ class _SideBySideWidget(QWidget):
         rs = self._right.verticalScrollBar()
         ls.valueChanged.connect(rs.setValue)
         rs.valueChanged.connect(ls.setValue)
+        self._left.cursorPositionChanged.connect(self._sync_highlight_rows)
+        self._right.cursorPositionChanged.connect(self._sync_highlight_rows)
+        self._sync_highlight_rows()
 
     def load(self, lt: list[str], rt: list[str],
              lty: list[str], rty: list[str]) -> None:
@@ -512,10 +541,16 @@ class _SideBySideWidget(QWidget):
     def set_cursor_line_col(self, line_no: int, col_no: int) -> None:
         self._left.set_cursor_line_col(line_no, col_no)
         self._right.set_cursor_line_col(line_no, col_no)
+        self._sync_highlight_rows()
 
     def ensure_cursor_band(self) -> None:
         self._left.ensure_cursor_band()
         self._right.ensure_cursor_band()
+
+    def _sync_highlight_rows(self) -> None:
+        line_no = self._left.cursor_line_col()[0]
+        self._left.set_highlight_line(line_no)
+        self._right.set_highlight_line(line_no)
 
 
 # ── main file tab ────────────────────────────────────────────────────────────
@@ -720,7 +755,7 @@ class FileTab(QWidget):
         if self._mode == "Inline Diff":
             return self._inline_edit
         if self._mode == "Side-by-Side":
-            return self._sbs._right
+            return self._sbs._left
         return None
 
     # ------------------------------------------------------------------
