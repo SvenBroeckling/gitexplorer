@@ -108,6 +108,9 @@ class _CodeEditor(QTextEdit):
     find_requested = pyqtSignal()
     commit_step_requested = pyqtSignal(int)  # +1 or -1
     change_nav_requested = pyqtSignal(int)  # -1 previous, +1 next
+    next_tab_requested = pyqtSignal()
+    prev_tab_requested = pyqtSignal()
+    project_search_requested = pyqtSignal(str)
     overlays_changed = pyqtSignal()
 
     _VISUAL_BLOCK_BG = QColor(210, 140, 0, 110)
@@ -133,6 +136,7 @@ class _CodeEditor(QTextEdit):
         self._block_anchor_line = 0
         self._block_anchor_col = 0
         self._syncing_visual_cursor = False
+        self._pending_g = False
         self.cursorPositionChanged.connect(self._on_cursor_position_changed)
 
     def paintEvent(self, event: QPaintEvent) -> None:
@@ -151,7 +155,29 @@ class _CodeEditor(QTextEdit):
         key = event.key()
         mods = event.modifiers()
 
+        if self._pending_g:
+            self._pending_g = False
+            if mods == Qt.KeyboardModifier.NoModifier:
+                if key == Qt.Key.Key_T:
+                    self.next_tab_requested.emit()
+                    event.accept()
+                    return
+                if key == Qt.Key.Key_D:
+                    word = self._word_under_cursor()
+                    if word:
+                        self.project_search_requested.emit(word)
+                    event.accept()
+                    return
+            if mods == Qt.KeyboardModifier.ShiftModifier and key == Qt.Key.Key_T:
+                self.prev_tab_requested.emit()
+                event.accept()
+                return
+
         if mods == Qt.KeyboardModifier.NoModifier:
+            if key == Qt.Key.Key_G:
+                self._pending_g = True
+                event.accept()
+                return
             if key == Qt.Key.Key_V:
                 self._start_visual(_VISUAL_CHAR)
                 event.accept()
@@ -258,6 +284,11 @@ class _CodeEditor(QTextEdit):
         pos = cursor.positionInBlock()
         ch = text[pos] if pos < len(text) else " "
         return max(8, self.fontMetrics().horizontalAdvance(ch))
+
+    def _word_under_cursor(self) -> str:
+        cursor = QTextCursor(self.textCursor())
+        cursor.select(QTextCursor.SelectionType.WordUnderCursor)
+        return cursor.selectedText().strip()
 
     def _move_cursor(self, operation: QTextCursor.MoveOperation) -> None:
         mode = (
@@ -457,6 +488,9 @@ class FileTab(QWidget):
     zoom_requested = pyqtSignal(int)   # forwarded from any child editor
     commit_selected = pyqtSignal(str)  # emitted with commit hash on every slider move
     commit_data_ready = pyqtSignal(str, int)
+    next_tab_requested = pyqtSignal()
+    prev_tab_requested = pyqtSignal()
+    project_search_requested = pyqtSignal(str)
 
     def __init__(self, filepath: str, backend: GitBackend,
                  parent: QWidget | None = None) -> None:
@@ -472,6 +506,7 @@ class FileTab(QWidget):
         self._match_idx: int = 0
         self._pending_cursor: tuple[int, int] | None = (0, 0)
         self._pending_top_line: int | None = None
+        self._has_loaded_initial_commit = False
         self._commit_cache: OrderedDict[str, dict[str, object]] = OrderedDict()
         self._cache_lock = Lock()
         self._cache_generation = 0
@@ -545,6 +580,9 @@ class FileTab(QWidget):
             editor.zoom_requested.connect(self.zoom_requested)
             editor.commit_step_requested.connect(self._slider.step)
             editor.change_nav_requested.connect(self._on_change_nav_requested)
+            editor.next_tab_requested.connect(self.next_tab_requested)
+            editor.prev_tab_requested.connect(self.prev_tab_requested)
+            editor.project_search_requested.connect(self.project_search_requested)
             editor.find_requested.connect(self.open_find)
 
         self._stack.insertWidget(_CLEAN, self._clean_edit)
@@ -807,6 +845,7 @@ class FileTab(QWidget):
             self._commit_cache.clear()
             self._prefetch_pending.clear()
         self._pending_top_line = None
+        self._has_loaded_initial_commit = False
 
     def _cache_commit_data(self, commit_hash: str, data: dict[str, object], generation: int) -> None:
         with self._cache_lock:
@@ -888,6 +927,7 @@ class FileTab(QWidget):
 
     def _render_commit_data(self, data: dict[str, object]) -> None:
         saved_line = self._pending_top_line
+        self._has_loaded_initial_commit = True
 
         if self._mode == "Clean":
             lines = data["clean_lines"]
@@ -939,6 +979,12 @@ class FileTab(QWidget):
 
         data = self._get_cached_commit_data(commit_hash)
         if data is not None:
+            self._render_commit_data(data)
+            return
+
+        if not self._has_loaded_initial_commit:
+            data = self._build_commit_data(self._backend, commit_hash)
+            self._cache_commit_data(commit_hash, data, self._cache_generation)
             self._render_commit_data(data)
             return
 

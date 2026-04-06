@@ -26,6 +26,7 @@ from gitexplorer.diff_view import FileTab
 from gitexplorer.file_search import FileSearchDialog
 from gitexplorer.file_tree_panel import FileTreePanel
 from gitexplorer.git_backend import GitBackend
+from gitexplorer.project_search import ProjectSearchDialog
 from gitexplorer.workspace import load_workspace, save_workspace
 
 _DEFAULT_FONT_SIZE = 13
@@ -36,6 +37,7 @@ _SHORTCUT_SECTIONS = [
         "Global",
         [
             ("Ctrl+O", "Open file search"),
+            ("Ctrl+W", "Close current tab"),
             ("Ctrl+Shift+F", "Open find in the current file"),
             ("?", "Open the shortcuts dialog"),
             ("Ctrl+Q", "Quit GitExplorer"),
@@ -51,6 +53,9 @@ _SHORTCUT_SECTIONS = [
             ("Ctrl+J", "Next changed hunk"),
             ("P", "Previous changed hunk"),
             ("N", "Next changed hunk"),
+            ("gt", "Next tab"),
+            ("gT", "Previous tab"),
+            ("gd", "Search project for word under cursor"),
             ("/", "Open find bar"),
             ("Ctrl+=", "Increase font size"),
             ("Ctrl+-", "Decrease font size"),
@@ -84,6 +89,14 @@ _SHORTCUT_SECTIONS = [
         [
             ("Up / Down", "Move through matches"),
             ("Enter", "Open selected file"),
+            ("Esc", "Close dialog"),
+        ],
+    ),
+    (
+        "Project Search Dialog",
+        [
+            ("Up / Down", "Move through matches"),
+            ("Enter", "Open selected result"),
             ("Esc", "Close dialog"),
         ],
     ),
@@ -226,6 +239,12 @@ class MainWindow(QMainWindow):
         search_action.triggered.connect(self._open_search_dialog)
         edit_menu.addAction(search_action)
 
+        close_tab_action = QAction("Close &Tab", self)
+        close_tab_action.setShortcut(QKeySequence("Ctrl+W"))
+        close_tab_action.setStatusTip("Close the current tab")
+        close_tab_action.triggered.connect(self._close_current_tab)
+        edit_menu.addAction(close_tab_action)
+
         # View ──────────────────────────────────────────────────────────
         view_menu = mb.addMenu("&View")
 
@@ -286,6 +305,11 @@ class MainWindow(QMainWindow):
         tab = self._tabs.currentWidget()
         if isinstance(tab, FileTab):
             tab.open_find()
+
+    def _close_current_tab(self) -> None:
+        if not hasattr(self, "_tabs") or self._tabs.count() == 0:
+            return
+        self._close_tab(self._tabs.currentIndex())
 
     # ------------------------------------------------------------------
     # Font size helpers
@@ -403,6 +427,9 @@ class MainWindow(QMainWindow):
         tab.set_font_size(self._font_size)
         tab.zoom_requested.connect(self._adjust_font_size)
         tab.commit_selected.connect(self._on_commit_selected)
+        tab.next_tab_requested.connect(self._goto_next_tab)
+        tab.prev_tab_requested.connect(self._goto_prev_tab)
+        tab.project_search_requested.connect(self._open_project_search_dialog)
         tab.load(branch, cursor_line_col)
 
         label = filepath.split("/")[-1]
@@ -441,6 +468,23 @@ class MainWindow(QMainWindow):
         dlg = FileSearchDialog(files, parent=self)
         if dlg.exec() and (filepath := dlg.selected_file()):
             self._open_file(filepath)
+
+    def _open_project_search_dialog(self, word: str) -> None:
+        if not self._backend.valid or not word:
+            return
+        dlg = ProjectSearchDialog(self._backend.repo_root, word, parent=self)
+        if dlg.exec() and (result := dlg.selected_result()):
+            self._open_file(result.filepath, (result.line_no - 1, max(result.col_no - 1, 0)))
+
+    def _goto_next_tab(self) -> None:
+        if not hasattr(self, "_tabs") or self._tabs.count() < 2:
+            return
+        self._tabs.setCurrentIndex((self._tabs.currentIndex() + 1) % self._tabs.count())
+
+    def _goto_prev_tab(self) -> None:
+        if not hasattr(self, "_tabs") or self._tabs.count() < 2:
+            return
+        self._tabs.setCurrentIndex((self._tabs.currentIndex() - 1) % self._tabs.count())
 
     # ------------------------------------------------------------------
     # Workspace persistence
