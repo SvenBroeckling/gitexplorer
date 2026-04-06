@@ -57,6 +57,7 @@ class FileTreePanel(QWidget):
         self._dir_items:  dict[str, QTreeWidgetItem] = {}
         self._branch_files: list[str] = []
         self._commit_files: list[str] = []
+        self._all_files_expanded_dirs: list[str] = []
 
         self.setSizePolicy(
             QSizePolicy.Policy.Preferred,
@@ -88,6 +89,8 @@ class FileTreePanel(QWidget):
             Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
         self._tree.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self._tree.itemExpanded.connect(self._on_tree_expanded_changed)
+        self._tree.itemCollapsed.connect(self._on_tree_expanded_changed)
         font = self._tree.font()
         font.setPointSize(font.pointSize() + 3)
         self._tree.setFont(font)
@@ -107,6 +110,8 @@ class FileTreePanel(QWidget):
             self._build_tree(branch)
 
     def _on_filter_changed(self, _label: str) -> None:
+        if self._filter_combo.currentText() == self._FILTER_COMMIT:
+            self._all_files_expanded_dirs = self._current_tree_expanded_dirs()
         self._rebuild_tree(preserve_expanded=True)
 
     def _build_tree(self, branch: str) -> None:
@@ -114,7 +119,7 @@ class FileTreePanel(QWidget):
         self._rebuild_tree(preserve_expanded=False)
 
     def _rebuild_tree(self, preserve_expanded: bool) -> None:
-        expanded_dirs = self.get_expanded_dirs() if preserve_expanded else []
+        expanded_dirs = self._expanded_dirs_for_rebuild(preserve_expanded)
         self._tree.clear()
         self._file_items: dict[str, QTreeWidgetItem] = {}   # filepath → item
         self._dir_items: dict[str, QTreeWidgetItem] = {}    # dirpath  → item
@@ -148,10 +153,33 @@ class FileTreePanel(QWidget):
                 parent = item
 
         _sort_dirs_first(self._tree)
-        if preserve_expanded:
+        if self._filter_combo.currentText() == self._FILTER_COMMIT:
+            self._expand_all_dirs()
+        elif preserve_expanded:
             self.restore_expanded_dirs(expanded_dirs)
         else:
             self._tree.collapseAll()
+
+    def _expanded_dirs_for_rebuild(self, preserve_expanded: bool) -> list[str]:
+        if not preserve_expanded:
+            return []
+        if self._filter_combo.currentText() == self._FILTER_COMMIT:
+            return self.get_expanded_dirs()
+        return self._all_files_expanded_dirs or self._current_tree_expanded_dirs()
+
+    def _expand_all_dirs(self) -> None:
+        for item in self._dir_items.values():
+            item.setExpanded(True)
+
+    def _on_tree_expanded_changed(self, _item: QTreeWidgetItem) -> None:
+        if self._filter_combo.currentText() == self._FILTER_ALL:
+            self._all_files_expanded_dirs = self._current_tree_expanded_dirs()
+
+    def _current_tree_expanded_dirs(self) -> list[str]:
+        return [
+            path for path, item in self._dir_items.items()
+            if item.isExpanded()
+        ]
 
     def _visible_files(self) -> list[str]:
         if self._filter_combo.currentText() == self._FILTER_COMMIT:
@@ -213,13 +241,13 @@ class FileTreePanel(QWidget):
 
     def get_expanded_dirs(self) -> list[str]:
         """Return paths of all currently expanded directory nodes."""
-        return [
-            path for path, item in self._dir_items.items()
-            if item.isExpanded()
-        ]
+        if self._filter_combo.currentText() == self._FILTER_COMMIT:
+            return list(self._all_files_expanded_dirs)
+        return self._current_tree_expanded_dirs()
 
     def restore_expanded_dirs(self, dirs: list[str]) -> None:
         """Expand exactly the directories listed in *dirs*; collapse the rest."""
+        self._all_files_expanded_dirs = list(dirs)
         expanded = set(dirs)
         for path, item in self._dir_items.items():
             item.setExpanded(path in expanded)

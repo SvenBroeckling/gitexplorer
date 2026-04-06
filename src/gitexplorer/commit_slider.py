@@ -32,6 +32,16 @@ _H        = 56   # total widget height
 
 # ── internal helpers ──────────────────────────────────────────────────────────
 
+def _compact_author(author: str) -> str:
+    """Compact author name for timeline labels."""
+    parts = [part for part in author.split() if part]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0][:10]
+    initials = "".join(part[0].upper() for part in parts[:3] if part[0].isalnum())
+    return initials or parts[0][:10]
+
 def _x_for(index: int, n: int, width: int) -> int:
     """Pixel x for commit *index* (0 = oldest/left, n-1 = newest/right)."""
     if n <= 1:
@@ -106,7 +116,13 @@ class _Timeline(QWidget):
         prev_right = -9999
         for i, c in enumerate(self._commits):
             x = _x_for(i, n, w)
-            label = c.date[:10]
+            date_label = c.date[:10]
+            author_label = _compact_author(c.author)
+            label = date_label if not author_label else f"{date_label} {author_label}"
+            max_width = max(48, min(132, (w - 2 * _MARGIN) // max(1, min(n, 8))))
+            if i == self._current:
+                max_width = max(max_width, 150)
+            label = fm.elidedText(label, Qt.TextElideMode.ElideRight, max_width)
             tw = fm.horizontalAdvance(label)
             lx = max(0, min(x - tw // 2, w - tw))
 

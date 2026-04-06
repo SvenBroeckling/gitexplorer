@@ -1,6 +1,10 @@
 """Per-file tab: commit slider + diff-mode selector + source/diff view."""
 from __future__ import annotations
 
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
+
 from PyQt6.QtCore import QPoint, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
@@ -46,6 +50,8 @@ _VISUAL_NONE = "none"
 _VISUAL_CHAR = "char"
 _VISUAL_LINE = "line"
 _VISUAL_BLOCK = "block"
+_PREFETCH_RADIUS = 2
+_COMMIT_CACHE_LIMIT = 8
 
 
 # ── scroll helpers ───────────────────────────────────────────────────────────
@@ -450,6 +456,7 @@ class FileTab(QWidget):
 
     zoom_requested = pyqtSignal(int)   # forwarded from any child editor
     commit_selected = pyqtSignal(str)  # emitted with commit hash on every slider move
+    commit_data_ready = pyqtSignal(str, int)
 
     def __init__(self, filepath: str, backend: GitBackend,
                  parent: QWidget | None = None) -> None:
@@ -464,6 +471,13 @@ class FileTab(QWidget):
         self._match_cursors: list[QTextCursor] = []
         self._match_idx: int = 0
         self._pending_cursor: tuple[int, int] | None = (0, 0)
+        self._pending_top_line: int | None = None
+        self._commit_cache: OrderedDict[str, dict[str, object]] = OrderedDict()
+        self._cache_lock = Lock()
+        self._cache_generation = 0
+        self._prefetch_pending: set[str] = set()
+        self._prefetch_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gitexplorer-prefetch")
+        self.commit_data_ready.connect(self._on_commit_data_ready)
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -577,6 +591,7 @@ class FileTab(QWidget):
     def load(self, branch: str, cursor_line_col: tuple[int, int] | None = (0, 0)) -> None:
         self._jump_on_next_render = cursor_line_col is None
         self._pending_cursor = cursor_line_col
+        self._reset_prefetch_state()
         # oldest (left) → newest (right)
         self._commits = list(reversed(
             self._backend.get_file_commits(branch, self._filepath)
@@ -643,6 +658,7 @@ class FileTab(QWidget):
         self._current_commit_hash = commit_hash
         self.commit_selected.emit(commit_hash)
         self._refresh_view(commit_hash)
+        self._schedule_prefetch_for_index(index)
 
     def _on_mode_changed(self, mode: str) -> None:
         self._set_mode(mode)
@@ -785,33 +801,108 @@ class FileTab(QWidget):
         mapping = {"Clean": _CLEAN, "Inline Diff": _INLINE, "Side-by-Side": _SIDEBYSIDE}
         self._stack.setCurrentIndex(mapping.get(mode, _INLINE))
 
-    def _refresh_view(self, commit_hash: str) -> None:
-        editor = self._active_editor()
-        saved_cursor = (
-            None if self._jump_on_next_render else (editor.cursor_line_col() if editor else None)
-        )
-        saved_line = (
-            None if self._jump_on_next_render
-            else (_top_visible_line(editor) if editor else None)
-        )
+    def _reset_prefetch_state(self) -> None:
+        with self._cache_lock:
+            self._cache_generation += 1
+            self._commit_cache.clear()
+            self._prefetch_pending.clear()
+        self._pending_top_line = None
+
+    def _cache_commit_data(self, commit_hash: str, data: dict[str, object], generation: int) -> None:
+        with self._cache_lock:
+            if generation != self._cache_generation:
+                return
+            self._commit_cache[commit_hash] = data
+            self._commit_cache.move_to_end(commit_hash)
+            while len(self._commit_cache) > _COMMIT_CACHE_LIMIT:
+                self._commit_cache.popitem(last=False)
+
+    def _get_cached_commit_data(self, commit_hash: str) -> dict[str, object] | None:
+        with self._cache_lock:
+            data = self._commit_cache.get(commit_hash)
+            if data is not None:
+                self._commit_cache.move_to_end(commit_hash)
+            return data
+
+    def _build_commit_data(self, backend: GitBackend, commit_hash: str) -> dict[str, object]:
+        content = backend.get_file_content(commit_hash, self._filepath)
+        clean_lines = content.splitlines()
+        clean_types = ["context"] * len(clean_lines)
+
+        diff_lines = backend.get_diff(commit_hash, self._filepath)
+        inline_lines = [dl.content for dl in diff_lines]
+        inline_types = [dl.line_type for dl in diff_lines]
+        sbs_data = pair_diff_lines(diff_lines)
+
+        return {
+            "clean_lines": clean_lines,
+            "clean_types": clean_types,
+            "inline_lines": inline_lines,
+            "inline_types": inline_types,
+            "sbs_data": sbs_data,
+        }
+
+    def _ensure_commit_data_loaded(self, commit_hash: str) -> bool:
+        if self._get_cached_commit_data(commit_hash) is not None:
+            return True
+        generation = self._cache_generation
+        with self._cache_lock:
+            if (
+                commit_hash in self._commit_cache
+                or commit_hash in self._prefetch_pending
+                or generation != self._cache_generation
+            ):
+                return False
+            self._prefetch_pending.add(commit_hash)
+        self._prefetch_executor.submit(self._prefetch_commit_data, generation, commit_hash)
+        return False
+
+    def _schedule_prefetch_for_index(self, index: int) -> None:
+        for offset in (-_PREFETCH_RADIUS, -1, 1, _PREFETCH_RADIUS):
+            neighbor = index + offset
+            if neighbor < 0 or neighbor >= len(self._commits):
+                continue
+            self._ensure_commit_data_loaded(self._commits[neighbor].hash)
+
+    def _prefetch_commit_data(self, generation: int, commit_hash: str) -> None:
+        data: dict[str, object] | None = None
+        try:
+            worker_backend = GitBackend(self._backend.repo_root)
+            data = self._build_commit_data(worker_backend, commit_hash)
+        finally:
+            with self._cache_lock:
+                self._prefetch_pending.discard(commit_hash)
+        if data is not None:
+            self._cache_commit_data(commit_hash, data, generation)
+            self.commit_data_ready.emit(commit_hash, generation)
+
+    def _show_loading_view(self) -> None:
+        self._current_line_types = []
+        self._clear_highlights(self._clean_edit)
+        self._clear_highlights(self._inline_edit)
+        self._clear_highlights(self._sbs._left)
+        self._clear_highlights(self._sbs._right)
+        _load_editor(self._clean_edit, self._clean_hl, ["Loading..."], ["context"])
+        _load_editor(self._inline_edit, self._inline_hl, ["Loading..."], ["context"])
+        self._sbs.load(["Loading..."], ["Loading..."], ["context"], ["context"])
+
+    def _render_commit_data(self, data: dict[str, object]) -> None:
+        saved_line = self._pending_top_line
 
         if self._mode == "Clean":
-            content = self._backend.get_file_content(commit_hash, self._filepath)
-            lines = content.splitlines()
-            types = ["context"] * len(lines)
+            lines = data["clean_lines"]
+            types = data["clean_types"]
             _load_editor(self._clean_edit, self._clean_hl, lines, types)
             self._current_line_types = types
 
         elif self._mode == "Inline Diff":
-            diff_lines = self._backend.get_diff(commit_hash, self._filepath)
-            lines = [dl.content for dl in diff_lines]
-            types = [dl.line_type for dl in diff_lines]
+            lines = data["inline_lines"]
+            types = data["inline_types"]
             _load_editor(self._inline_edit, self._inline_hl, lines, types)
             self._current_line_types = types
 
         elif self._mode == "Side-by-Side":
-            diff_lines = self._backend.get_diff(commit_hash, self._filepath)
-            lt, rt, lty, rty = pair_diff_lines(diff_lines)
+            lt, rt, lty, rty = data["sbs_data"]
             self._sbs.load(lt, rt, lty, rty)
             self._current_line_types = rty
 
@@ -822,7 +913,7 @@ class FileTab(QWidget):
         # Scroll: restore saved cursor/viewport, or jump to the initial cursor
         editor = self._active_editor()
         if editor:
-            target_cursor = self._pending_cursor if self._pending_cursor is not None else saved_cursor
+            target_cursor = self._pending_cursor
             if target_cursor is not None:
                 line_no, col_no = target_cursor
                 if self._mode == "Side-by-Side":
@@ -837,3 +928,31 @@ class FileTab(QWidget):
                 _scroll_to_line(editor, saved_line)
                 if self._mode == "Side-by-Side":
                     _scroll_to_line(self._sbs._left, saved_line)
+            self._pending_top_line = None
+
+    def _refresh_view(self, commit_hash: str) -> None:
+        editor = self._active_editor()
+        if not self._jump_on_next_render and self._pending_cursor is None and editor:
+            self._pending_top_line = _top_visible_line(editor)
+        elif self._jump_on_next_render:
+            self._pending_top_line = None
+
+        data = self._get_cached_commit_data(commit_hash)
+        if data is not None:
+            self._render_commit_data(data)
+            return
+
+        self._show_loading_view()
+        self._ensure_commit_data_loaded(commit_hash)
+
+    def _on_commit_data_ready(self, commit_hash: str, generation: int) -> None:
+        if generation != self._cache_generation or commit_hash != self._current_commit_hash:
+            return
+        data = self._get_cached_commit_data(commit_hash)
+        if data is None:
+            return
+        self._render_commit_data(data)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._prefetch_executor.shutdown(wait=False, cancel_futures=True)
+        super().closeEvent(event)
